@@ -15,7 +15,8 @@ The function will need the following permissions:
             "Effect": "Allow",
             "Action": [
                 "logs:DeleteLogGroup",
-                "logs:DescribeLogGroups"
+                "logs:DescribeLogGroups",
+                "lambda:ListFunctions"
             ],
             "Resource": [
                 "*"
