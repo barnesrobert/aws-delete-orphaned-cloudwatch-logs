@@ -46,11 +46,12 @@ def lambda_handler(event, context):
 
         logs_client = boto3.client('logs', region_name=region)
     
-        # Collect the list of existing Lambda functions.
         services = {}
         services['region'] = region
 
+        #--------------------------------------------------
         # Collect the list of existing Lambda functions.
+        #--------------------------------------------------
         functions = []
         
         try:
@@ -65,7 +66,9 @@ def lambda_handler(event, context):
 
         services['lambda'] = sorted(functions)
 
+        #--------------------------------------------------
         # Collect the list of existing Flow Log logs.
+        #--------------------------------------------------
         vpcs = []
 
         try:
@@ -78,7 +81,9 @@ def lambda_handler(event, context):
 
         services['vpc'] = sorted(vpcs)
 
+        #--------------------------------------------------
         # Collect the list of existing SageMaker notebook instances.
+        #--------------------------------------------------
         sagemaker_instances = []
         try:
             # Account for the possibility that SageMaker isn't supported in this region.
@@ -93,13 +98,20 @@ def lambda_handler(event, context):
 
         print(json.dumps(services))
 
+        #--------------------------------------------------
+        # Iterate through the CloudWatch log groups and look
+        # for log name signatures that match names created
+        # as defaults by the services
+        #--------------------------------------------------
         orphaned_count = 0
         
         paginator = logs_client.get_paginator('describe_log_groups')
         for response in paginator.paginate():
             for log_group in response.get('logGroups'):
                 
-                #  By default, Lambda-generated log groups begin with "/aws/lambda/".
+                #--------------------------------------------------
+                # Lambda functions
+                #--------------------------------------------------
                 if log_group['logGroupName'].startswith('/aws/lambda/'):
                     function_name  = log_group['logGroupName'].split("/")[3]
     
@@ -117,6 +129,9 @@ def lambda_handler(event, context):
                             print('Function {} does not exist in region {}, DELETING.'.format(function_name, region))
                             logs_client.delete_log_group(logGroupName = log_group['logGroupName'])
     
+                #--------------------------------------------------
+                # VPC flow logs
+                #--------------------------------------------------
                 elif log_group['logGroupName'].startswith('vpc-flow-logs-'):
                     vpc_name  = 'vpc-' + log_group['logGroupName'].split("-")[4]
     
@@ -134,6 +149,9 @@ def lambda_handler(event, context):
                             print('VPC {} does not exist, DELETING.'.format(vpc_name))
                             logs_client.delete_log_group(logGroupName = log_group['logGroupName'])
     
+                #--------------------------------------------------
+                # SageMaker notebook instances
+                #--------------------------------------------------
                 elif log_group['logGroupName'].startswith('/aws/sagemaker/Endpoints/'):
                     notebook_name  = log_group['logGroupName'].split("/")[4]
     
@@ -151,8 +169,7 @@ def lambda_handler(event, context):
                             print('Notebook {} does not exist, DELETING.'.format(notebook_name))
                             logs_client.delete_log_group(logGroupName = log_group['logGroupName'])
     
+
         return_message = 'There were {0} orphaned log groups in {1}.\n'.format(orphaned_count, region)
                             
         print (return_message)
-
-    #return return_message
