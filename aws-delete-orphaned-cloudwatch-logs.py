@@ -31,7 +31,9 @@ def lambda_handler(event, context):
     # Determine whether the user just wants to view the orphaned logs.
     view_only = ('view_only' in event and event['view_only'].lower() == 'true')
 
+    #--------------------------------------------------
     # Determine which regions to include. Apply to all regions by default.
+    #--------------------------------------------------
     if 'regions' in event and type(event['regions']) == list:
         regions = event['regions']
 
@@ -40,62 +42,16 @@ def lambda_handler(event, context):
         region_response = boto3.client('ec2').describe_regions()
         regions = [region['RegionName'] for region in region_response['Regions']]
 
+    #--------------------------------------------------
+    # Iterate through the specified regions.
+    #--------------------------------------------------
     for region in regions:
 
         print('REGION: {}'.format(region))
 
-        logs_client = boto3.client('logs', region_name=region)
-    
-        services = {}
+        # Get the relevant service resources.
+        services = get_service_resources(region)
         services['region'] = region
-
-        #--------------------------------------------------
-        # Collect the list of existing Lambda functions.
-        #--------------------------------------------------
-        functions = []
-        
-        try:
-            paginator = boto3.client('lambda', region_name=region).get_paginator('list_functions')
-            for response in paginator.paginate():
-                for function in response.get('Functions'):
-                    functions.append(function['FunctionName'])
-        except EndpointConnectionError as e:    
-            print(e)
-        except ClientError as e:
-            print(e)
-
-        services['lambda'] = sorted(functions)
-
-        #--------------------------------------------------
-        # Collect the list of existing Flow Log logs.
-        #--------------------------------------------------
-        vpcs = []
-
-        try:
-            for resource in boto3.client('ec2', region_name=region).describe_vpcs().get('Vpcs'):
-                vpcs.append(resource['VpcId'])
-        except EndpointConnectionError as e:    
-            print(e)
-        except ClientError as e:
-            print(e)
-
-        services['vpc'] = sorted(vpcs)
-
-        #--------------------------------------------------
-        # Collect the list of existing SageMaker notebook instances.
-        #--------------------------------------------------
-        sagemaker_instances = []
-        try:
-            # Account for the possibility that SageMaker isn't supported in this region.
-            for resource in boto3.client('sagemaker', region_name=region).list_notebook_instances().get('NotebookInstances'):
-                vpcs.append(resource['NotebookInstanceName'])
-        except EndpointConnectionError as e:    
-            print(e)
-        except ClientError as e:
-            print(e)
-        
-        services['sagemaker'] = sorted(sagemaker_instances)
-
         print(json.dumps(services))
 
         #--------------------------------------------------
@@ -103,73 +59,145 @@ def lambda_handler(event, context):
         # for log name signatures that match names created
         # as defaults by the services
         #--------------------------------------------------
+        logs_client = boto3.client('logs', region_name=region)
         orphaned_count = 0
         
         paginator = logs_client.get_paginator('describe_log_groups')
         for response in paginator.paginate():
             for log_group in response.get('logGroups'):
+
+                # Based on the log name, determine whether there are associated
+                # resources.
+                orphaned_count += process_log_group(logs_client, log_group['logGroupName'], services)
                 
-                #--------------------------------------------------
-                # Lambda functions
-                #--------------------------------------------------
-                if log_group['logGroupName'].startswith('/aws/lambda/'):
-                    function_name  = log_group['logGroupName'].split("/")[3]
-    
-                    if function_name in services['lambda']:
-                        print ("Function {} exists, not deleting.".format(function_name))
-                    else:
-                        
-                        orphaned_count += 1
-                        
-                        if view_only: 
-                            print('Function {} does not exist.'.format(function_name))
-    
-                        else:
-                            # There is no associated Lambda function, so delete the log group.
-                            print('Function {} does not exist in region {}, DELETING.'.format(function_name, region))
-                            logs_client.delete_log_group(logGroupName = log_group['logGroupName'])
-    
-                #--------------------------------------------------
-                # VPC flow logs
-                #--------------------------------------------------
-                elif log_group['logGroupName'].startswith('vpc-flow-logs-'):
-                    vpc_name  = 'vpc-' + log_group['logGroupName'].split("-")[4]
-    
-                    if vpc_name in services['vpc']:
-                        print ("VPC {} exists, not deleting.".format(vpc_name))
-                    else:
-                        
-                        orphaned_count += 1
-                        
-                        if view_only: 
-                            print('VPC {} does not exist.'.format(vpc_name))
-    
-                        else:
-                            # There is no associated VPC, so delete the log group.
-                            print('VPC {} does not exist, DELETING.'.format(vpc_name))
-                            logs_client.delete_log_group(logGroupName = log_group['logGroupName'])
-    
-                #--------------------------------------------------
-                # SageMaker notebook instances
-                #--------------------------------------------------
-                elif log_group['logGroupName'].startswith('/aws/sagemaker/Endpoints/'):
-                    notebook_name  = log_group['logGroupName'].split("/")[4]
-    
-                    if notebook_name in services['sagemaker']:
-                        print ("Notebook {} exists, not deleting.".format(notebook_name))
-                    else:
-                        
-                        orphaned_count += 1
-                        
-                        if view_only: 
-                            print('Notebook {} does not exist.'.format(notebook_name))
-    
-                        else:
-                            # There is no associated notebook instance, so delete the log group.
-                            print('Notebook {} does not exist, DELETING.'.format(notebook_name))
-                            logs_client.delete_log_group(logGroupName = log_group['logGroupName'])
-    
 
         return_message = 'There were {0} orphaned log groups in {1}.\n'.format(orphaned_count, region)
                             
         print (return_message)
+
+
+#--------------------------------------------------
+# function: get_service_resources
+#--------------------------------------------------
+def get_service_resources(region):
+    
+    services = {}
+
+    #--------------------------------------------------
+    # Collect the list of existing Lambda functions.
+    #--------------------------------------------------
+    functions = []
+    
+    try:
+        paginator = boto3.client('lambda', region_name=region).get_paginator('list_functions')
+        for response in paginator.paginate():
+            for function in response.get('Functions'):
+                functions.append(function['FunctionName'])
+    except EndpointConnectionError as e:    
+        print(e)
+    except ClientError as e:
+        print(e)
+
+    services['lambda'] = sorted(functions)
+
+    #--------------------------------------------------
+    # Collect the list of existing Flow Log logs.
+    #--------------------------------------------------
+    vpcs = []
+
+    try:
+        for resource in boto3.client('ec2', region_name=region).describe_vpcs().get('Vpcs'):
+            vpcs.append(resource['VpcId'])
+    except EndpointConnectionError as e:    
+        print(e)
+    except ClientError as e:
+        print(e)
+
+    services['vpc'] = sorted(vpcs)
+
+    #--------------------------------------------------
+    # Collect the list of existing SageMaker notebook instances.
+    #--------------------------------------------------
+    sagemaker_instances = []
+    try:
+        # Account for the possibility that SageMaker isn't supported in this region.
+        for resource in boto3.client('sagemaker', region_name=region).list_notebook_instances().get('NotebookInstances'):
+            vpcs.append(resource['NotebookInstanceName'])
+    except EndpointConnectionError as e:    
+        print(e)
+    except ClientError as e:
+        print(e)
+    
+    services['sagemaker'] = sorted(sagemaker_instances)
+
+    return services
+    
+
+#--------------------------------------------------
+# function: process_log_group
+#--------------------------------------------------
+def process_log_group(logs_client, log_group_name, services):
+    
+    orphaned_count = 0
+
+    #--------------------------------------------------
+    # Lambda functions
+    #--------------------------------------------------
+    if log_group_name.startswith('/aws/lambda/'):
+        function_name = log_group_name.split("/")[3]
+
+        if function_name in services['lambda']:
+            print ("Function {} exists, not deleting.".format(function_name))
+        else:
+            
+            orphaned_count += 1
+            
+            if view_only: 
+                print('Function {} does not exist.'.format(function_name))
+
+            else:
+                # There is no associated Lambda function, so delete the log group.
+                print('Function {} does not exist, DELETING.'.format(function_name))
+                logs_client.delete_log_group(logGroupName = log_group_name)
+
+    #--------------------------------------------------
+    # VPC flow logs
+    #--------------------------------------------------
+    elif log_group_name.startswith('vpc-flow-logs-'):
+        vpc_name  = 'vpc-' + log_group_name.split("-")[4]
+
+        if vpc_name in services['vpc']:
+            print ("VPC {} exists, not deleting.".format(vpc_name))
+        else:
+            
+            orphaned_count += 1
+            
+            if view_only: 
+                print('VPC {} does not exist.'.format(vpc_name))
+
+            else:
+                # There is no associated VPC, so delete the log group.
+                print('VPC {} does not exist, DELETING.'.format(vpc_name))
+                logs_client.delete_log_group(logGroupName = log_group_name)
+
+    #--------------------------------------------------
+    # SageMaker notebook instances
+    #--------------------------------------------------
+    elif log_group_name.startswith('/aws/sagemaker/Endpoints/'):
+        notebook_name  = log_group_name.split("/")[4]
+
+        if notebook_name in services['sagemaker']:
+            print ("Notebook {} exists, not deleting.".format(notebook_name))
+        else:
+            
+            orphaned_count += 1
+            
+            if view_only: 
+                print('Notebook {} does not exist.'.format(notebook_name))
+
+            else:
+                # There is no associated notebook instance, so delete the log group.
+                print('Notebook {} does not exist, DELETING.'.format(notebook_name))
+                logs_client.delete_log_group(logGroupName = log_group_name)
+
+    return orphaned_count
